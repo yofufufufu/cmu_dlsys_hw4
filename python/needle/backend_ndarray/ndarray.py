@@ -1,4 +1,5 @@
 import operator
+import builtins
 import math
 from functools import reduce
 import numpy as np
@@ -247,7 +248,22 @@ class NDArray:
         """
 
         ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
+        # if self.size != prod(new_shape) or not self.is_compact():
+        if self.size != prod(new_shape):
+            raise ValueError()
+        # 在反向传播的过程中，出现了reshape非连续NDArray的情况
+        # （logsumexp中对outgrad的reshape，原因是前向计算中有sum，outgrad是通过broadcast来的，存储非连续）
+        # 但是比较奇怪的是，不compact结果也没问题
+        # if not self.is_compact():
+        #     self = self.compact()
+
+        # new_strides = [reduce(operator.mul, new_shape[dim + 1:], 1) for dim in range(len(new_shape) - 1)]
+        # # last dim stride
+        # new_strides.append(1)
+
+        # 已经提供了通过shape求strides的函数
+        new_strides = NDArray.compact_strides(new_shape)
+        return self.as_strided(shape=new_shape, strides=new_strides)
         ### END YOUR SOLUTION
 
     def permute(self, new_axes):
@@ -272,7 +288,10 @@ class NDArray:
         """
 
         ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
+        new_shape = [self._shape[axis] for axis in new_axes]
+        # permute strides
+        new_strides = [self._strides[axis] for axis in new_axes]
+        return self.as_strided(shape=tuple(new_shape), strides=tuple(new_strides))
         ### END YOUR SOLUTION
 
     def broadcast_to(self, new_shape):
@@ -296,7 +315,19 @@ class NDArray:
         """
 
         ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
+        # numpy的广播策略是将维度先`右`对齐，然后从右往左比较
+        # 所以如果维数增加(如1D->2D)，将input_shape缺失的维度从左开始填1与output_shape对齐
+        shape_diff = len(new_shape) - len(self._shape)
+        tmp_shape = [1] * shape_diff + list(self._shape)
+        new_strides = [0] * shape_diff + list(self._strides)
+        for i in range(shape_diff, len(new_shape)):
+            # 检查哪些维度要被扩展
+            assert new_shape[i] == tmp_shape[i] or tmp_shape[i] == 1
+            # if new_shape[i] != tmp_shape[i] and tmp_shape[i] == 1:
+            # https://github.com/kcxain/dlsys/issues/1
+            if tmp_shape[i] == 1:
+                new_strides[i] = 0
+        return self.as_strided(shape=new_shape, strides=tuple(new_strides),)
         ### END YOUR SOLUTION
 
     ### Get and set elements
@@ -363,12 +394,27 @@ class NDArray:
         assert len(idxs) == self.ndim, "Need indexes equal to number of dimensions"
 
         ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
+        # One thing to note is that the __getitem__() call, unlike numpy, will never change the number of dimensions in the array
+        # (a + b - 1) / b 实现向上取整
+        new_shape = [(slice_tuple.stop - slice_tuple.start + slice_tuple.step - 1) // slice_tuple.step for slice_tuple
+                     in idxs]
+        # 从stride的定义出发，stride[i]表示第i个维度上移动“一个单位”需要在内存上跳过多少个元素
+        # 当切片的step为正数时，需要跳过的元素数量就扩大step倍
+        new_strides = [stride * slice_tuple.step for stride, slice_tuple in zip(self._strides, idxs)]
+        # 就从index为0入手推导offset，想想index都为0时应该拿到底层存储的哪个元素(因为index都为0时，strides不起作用，只有offset起作用)
+        # ndarray.py中还有一个sum同名函数（名字取的不好），为了避免冲突要指定使用内置的sum
+        new_offset = builtins.sum([slice_tuple.start * stride for stride, slice_tuple in zip(self._strides, idxs)])
+        return self.make(shape=tuple(new_shape),
+                         strides=tuple(new_strides),
+                         device=self.device,
+                         handle=self._handle,
+                         offset=new_offset)
         ### END YOUR SOLUTION
 
     def __setitem__(self, idxs, other):
         """Set the values of a view into an array, using the same semantics
         as __getitem__()."""
+        # 要set一个或者多个值，先get（例如要set 2D NDArray[1:5, 2:4]，需要先得到对应的view，即知道了如何访问这部分底层存储）
         view = self.__getitem__(idxs)
         if isinstance(other, NDArray):
             assert prod(view.shape) == prod(other.shape)
@@ -573,7 +619,17 @@ class NDArray:
         Note: compact() before returning.
         """
         ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
+        new_shape = self.shape
+        new_strides = list(self._strides)
+        new_offset = 0
+        for axis in axes:
+            new_strides[axis] = -new_strides[axis]
+            new_offset += (self._shape[axis] - 1) * self._strides[axis]
+        return self.make(shape=new_shape,
+                         strides=tuple(new_strides),
+                         device=self.device,
+                         handle=self._handle,
+                         offset=new_offset).compact()
         ### END YOUR SOLUTION
 
     def pad(self, axes):
@@ -583,7 +639,13 @@ class NDArray:
         axes = ( (0, 0), (1, 1), (0, 0)) pads the middle axis with a 0 on the left and right side.
         """
         ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
+        new_shape = [v + builtins.sum(axes_tuple) for v, axes_tuple in zip(self.shape, axes)]
+        padded = NDArray.make(new_shape, device=self.device)
+        padded.fill(0)
+        # axes一定给出所有维度的pad情况
+        slices = [slice(axes_tuple[0], v + axes_tuple[1], 1) for v, axes_tuple in zip(self.shape, axes)]
+        padded[tuple(slices)] = self
+        return padded
         ### END YOUR SOLUTION
 
 def array(a, dtype="float32", device=None):

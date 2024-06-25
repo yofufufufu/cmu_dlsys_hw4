@@ -6,7 +6,7 @@ import numpy as np
 
 import sys
 
-sys.path.append("python/")
+sys.path.append("/WdHeDisk/users/tang22/CMU_DLSys/cmu_dlsys_hw4/python")
 import needle as ndl
 
 import needle.nn as nn
@@ -37,7 +37,36 @@ def parse_mnist(image_filesname, label_filename):
                 for MNIST will contain the values 0-9.
     """
     ### BEGIN YOUR SOLUTION
-    raise NotImplementedError()
+    # 我没做hw0，copy from https://github.com/kcxain/dlsys/blob/master/hw0/src/simple_ml.py
+    f = gzip.open(image_filesname)
+    data = f.read()
+    f.close()
+    h = struct.unpack_from('>IIII', data, 0)
+    offset = struct.calcsize('>IIII')
+    imgNum = h[1]
+    rows = h[2]
+    columns = h[3]
+    pixelString = '>' + str(imgNum * rows * columns) + 'B'
+    pixels = struct.unpack_from(pixelString, data, offset)
+    X = np.reshape(pixels, [imgNum, rows * columns]).astype('float32')
+    X_max = np.max(X)
+    X_min = np.min(X)
+    # X_max = np.max(X, axis=1, keepdims=True)
+    # X_min = np.min(X, axis=1, keepdims=True)
+
+    X_normalized = ((X - X_min) / (X_max - X_min))
+
+    f = gzip.open(label_filename)
+    data = f.read()
+    f.close()
+    h = struct.unpack_from('>II', data, 0)
+    offset = struct.calcsize('>II')
+    num = h[1]
+    labelString = '>' + str(num) + 'B'
+    labels = struct.unpack_from(labelString, data, offset)
+    y = np.reshape(labels, [num]).astype('uint8')
+
+    return (X_normalized, y)
     ### END YOUR SOLUTION
 
 
@@ -58,7 +87,10 @@ def softmax_loss(Z, y_one_hot):
         Average softmax loss over the sample. (ndl.Tensor[np.float32])
     """
     ### BEGIN YOUR SOLUTION
-    raise NotImplementedError()
+    # combine soft-max and cross-entropy
+    batch_num = Z.shape[0]
+    loss_per_batch = needle.ops.log(needle.ops.exp(Z).sum(axes=(1,))) - (Z * y_one_hot).sum(axes=(1,))
+    return loss_per_batch.sum() / batch_num
     ### END YOUR SOLUTION
 
 
@@ -87,7 +119,26 @@ def nn_epoch(X, y, W1, W2, lr=0.1, batch=100):
     """
 
     ### BEGIN YOUR SOLUTION
-    raise NotImplementedError()
+    num_examples = X.shape[0]
+    for i in range(0, num_examples, batch):
+        X_batch = X[i: i + batch]
+        y_batch = y[i: i + batch]
+        X_batch = ndl.Tensor(X_batch)
+        Z1 = ndl.ops.relu(X_batch @ W1)
+        Z = Z1 @ W2
+        # get one-hot
+        y_one_hot = np.zeros(Z.shape, dtype="float32")
+        y_one_hot[np.arange(Z.shape[0]), y_batch] = 1
+        loss = softmax_loss(Z, ndl.Tensor(y_one_hot))
+        loss.backward()
+
+        # detach: create a new tensor that shares the data but detaches from the graph(no op and inputs, only has cached data)
+        # create new Tensors for W1 and W2 with these numpy values
+        # 因为更新W的计算: W - lr * grad不应该成为计算图中的内容
+        # 新的W1和W2在新一轮的计算图中还是叶子结点
+        W1 = (W1 - lr * W1.grad).detach()
+        W2 = (W2 - lr * W2.grad).detach()
+    return W1, W2
     ### END YOUR SOLUTION
 
 ### CIFAR-10 training ###
@@ -159,7 +210,7 @@ def evaluate_cifar10(model, dataloader, loss_fn=nn.SoftmaxLoss):
 
 ### PTB training ###
 def epoch_general_ptb(data, model, seq_len=40, loss_fn=nn.SoftmaxLoss(), opt=None,
-        clip=None, device=None, dtype="float32"):
+                      clip=None, device=None, dtype="float32"):
     """
     Iterates over the data. If optimizer is not None, sets the
     model to train mode, and for each batch updates the model parameters.
@@ -180,13 +231,56 @@ def epoch_general_ptb(data, model, seq_len=40, loss_fn=nn.SoftmaxLoss(), opt=Non
     """
     np.random.seed(4)
     ### BEGIN YOUR SOLUTION
-    raise NotImplementedError()
+    losses = []
+    corrects = []
+    dataset_size = 0
+    train = opt is not None
+    if train:
+        model.train()
+    else:
+        model.eval()
+
+    nbatch, batch_size = data.shape
+
+    hidden = None
+    for i in range(0, nbatch - 1, seq_len):
+        x, y = ndl.data.get_batch(data, i, seq_len, device=device, dtype=dtype)
+
+        batch_size = y.shape[0]
+        dataset_size += batch_size
+        y_pred, hidden = model(x, hidden)
+
+        # 把前一个batch的final hidden state作为下一个batch的initial hidden state
+        # lstm
+        if isinstance(hidden, tuple):
+            h, c = hidden
+            hidden = (h.detach(), c.detach())
+        # rnn
+        else:
+            hidden = hidden.detach()
+        # soft_max = nn.SoftmaxLoss()
+        # y_pred shape: (seq_len * batch_size, output_size)
+        # y shape: (seq_len * batch_size)
+        loss = loss_fn(y_pred, y)
+        # print(loss)
+        if train:
+            opt.reset_grad()
+            loss.backward()
+            opt.step()
+
+        losses.append(loss.numpy() * batch_size)
+        correct = np.sum(y_pred.numpy().argmax(axis=1) == y.numpy())
+        corrects.append(correct)
+
+    avg_acc = np.sum(np.array(corrects)) / dataset_size
+    avg_loss = np.sum(np.array(losses)) / dataset_size
+    return avg_acc, avg_loss
     ### END YOUR SOLUTION
 
 
 def train_ptb(model, data, seq_len=40, n_epochs=1, optimizer=ndl.optim.SGD,
-          lr=4.0, weight_decay=0.0, loss_fn=nn.SoftmaxLoss, clip=None,
-          device=None, dtype="float32"):
+              lr=4.0, weight_decay=0.0, loss_fn=nn.SoftmaxLoss(), clip=None,
+              device=None, dtype="float32"):
     """
     Performs {n_epochs} epochs of training.
 
@@ -207,11 +301,17 @@ def train_ptb(model, data, seq_len=40, n_epochs=1, optimizer=ndl.optim.SGD,
     """
     np.random.seed(4)
     ### BEGIN YOUR SOLUTION
-    raise NotImplementedError()
+    opt = optimizer(model.parameters(), lr=lr, weight_decay=weight_decay)
+
+    for _ in range(n_epochs):
+        avg_acc, avg_loss = epoch_general_ptb(data, model, seq_len=seq_len, loss_fn=loss_fn, opt=opt, device=device,
+                                              dtype=dtype)
+    return avg_acc, avg_loss
     ### END YOUR SOLUTION
 
-def evaluate_ptb(model, data, seq_len=40, loss_fn=nn.SoftmaxLoss,
-        device=None, dtype="float32"):
+
+def evaluate_ptb(model, data, seq_len=40, loss_fn=nn.SoftmaxLoss(),
+                 device=None, dtype="float32"):
     """
     Computes the test accuracy and loss of the model.
 
@@ -227,7 +327,9 @@ def evaluate_ptb(model, data, seq_len=40, loss_fn=nn.SoftmaxLoss,
     """
     np.random.seed(4)
     ### BEGIN YOUR SOLUTION
-    raise NotImplementedError()
+    avg_acc, avg_loss = epoch_general_ptb(data, model, seq_len=seq_len, loss_fn=loss_fn, opt=None, device=device,
+                                          dtype=dtype)
+    return avg_acc, avg_loss
     ### END YOUR SOLUTION
 
 ### CODE BELOW IS FOR ILLUSTRATION, YOU DO NOT NEED TO EDIT

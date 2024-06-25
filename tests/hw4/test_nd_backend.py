@@ -1,5 +1,5 @@
 import sys
-sys.path.append('./python')
+sys.path.append("/WdHeDisk/users/tang22/CMU_DLSys/cmu_dlsys_hw4/python")
 import itertools
 import numpy as np
 import pytest

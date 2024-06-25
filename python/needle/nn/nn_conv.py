@@ -28,10 +28,34 @@ class Conv(Module):
         self.stride = stride
 
         ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
+        # 卷积情况下的初始化（shape不为None）
+        # fan_in: 输入特征图数（I） * 感受野大小（K*K），fan_out: 输出特征图数（O） * 感受野大小，shape: 卷积核大小（KKIO）
+        fan_in = in_channels * kernel_size * kernel_size
+        fan_out = out_channels * kernel_size * kernel_size
+        kernel_shape = (kernel_size, kernel_size, in_channels, out_channels)
+        self.weight = Parameter(
+            init.kaiming_uniform(fan_in, fan_out, shape=kernel_shape, device=device, dtype=dtype, requires_grad=True)
+        )
+        if bias:
+            bound = 1.0 / (in_channels * kernel_size ** 2) ** 0.5
+            self.bias = Parameter(
+                init.rand(out_channels, low=-bound, high=bound, device=device, dtype=dtype, requires_grad=True)
+            )
+        else:
+            self.bias = None
         ### END YOUR SOLUTION
 
     def forward(self, x: Tensor) -> Tensor:
         ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
+        # Calculate the appropriate padding to ensure input and output dimensions are the same
+        # (in the stride=1 case, anyways)
+        padding = (self.kernel_size - 1) // 2
+        # NCHW -> NHWC
+        conv_res = ops.conv(x.transpose(axes=(1, 2)).transpose(axes=(2, 3)), self.weight,
+                            stride=self.stride, padding=padding)
+        if self.bias:
+            # (out_channels,) -> (N, H, W, out_channels)
+            conv_res += self.bias.broadcast_to(conv_res.shape)
+        # NHWC -> NCHW
+        return conv_res.transpose(axes=(2, 3)).transpose(axes=(1, 2))
         ### END YOUR SOLUTION
